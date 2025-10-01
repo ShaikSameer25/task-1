@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>eCourts Case Lookup (Simulator)</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Inter Font -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        .container {
+            max-width: 900px;
+        }
+        /* Custom scrollbar for better appearance */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #d1d5db;
+            border-radius: 10px;
+        }
+    </style>
+    <!-- Firebase SDK Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the Canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth, userId;
+
+        /**
+         * Initializes Firebase and authenticates the user.
+         */
+        async function initializeFirebase() {
+            try {
+                if (Object.keys(firebaseConfig).length === 0) {
+                    throw new Error("Firebase configuration not available.");
+                }
+
+                setLogLevel('Debug');
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Authentication
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+                userId = auth.currentUser?.uid || crypto.randomUUID();
+
+                console.log("Firebase initialized. User ID:", userId);
+
+                // Attach global variables (db, userId) after auth is ready for external use/debugging
+                window.db = db;
+                window.userId = userId;
+                // Core functions (fetchCaseDetails, fetchCauseList, loadQueryHistory) are attached to window synchronously
+                // at the end of the script execution to prevent the 'TypeError' from HTML onclick handlers.
+
+                // Load history immediately after setup
+                loadQueryHistory();
+
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                document.getElementById('app-container').innerHTML = <div class="p-6 bg-red-100 border border-red-400 text-red-700 rounded-lg shadow-lg">Error initializing app: ${error.message}</div>;
+            }
+        }
+
+        // --- Firestore Storage Logic ---
+
+        /**
+         * Saves a query and its response to Firestore.
+         * @param {string} type - 'case' or 'cause_list'
+         * @param {object} queryData - The input parameters
+         * @param {object} response - The parsed or raw API response
+         */
+        async function saveQueryToHistory(type, queryData, response) {
+            if (!db || !userId) return;
+
+            const collectionPath = /artifacts/${appId}/users/${userId}/courtQueries;
+            try {
+                await addDoc(collection(db, collectionPath), {
+                    type: type,
+                    query: queryData,
+                    response: response,
+                    timestamp: serverTimestamp(),
+                    userId: userId
+                });
+                console.log("Query saved to history.");
+            } catch (e) {
+                console.error("Error adding document: ", e);
+            }
+        }
+        
+        /**
+         * Loads and displays the query history in real-time.
+         */
+        function loadQueryHistory() {
+            if (!db || !userId) return;
+
+            const collectionPath = /artifacts/${appId}/users/${userId}/courtQueries;
+            const q = query(collection(db, collectionPath), orderBy("timestamp", "desc"));
+            const historyListEl = document.getElementById('history-list');
+
+            onSnapshot(q, (querySnapshot) => {
+                let historyHtml = '';
+                if (querySnapshot.empty) {
+                    historyHtml = '<p class="text-gray-500 italic p-4">No recent queries found.</p>';
+                } else {
+                    querySnapshot.forEach((doc) => {
+                        const data = doc.data();
+                        const date = data.timestamp ? new Date(data.timestamp.toDate()).toLocaleString() : 'N/A';
+                        
+                        let querySummary = '';
+                        if (data.type === 'case') {
+                            querySummary = ${data.query.caseType}/${data.query.caseNumber}/${data.query.year};
+                        } else if (data.type === 'cause_list') {
+                            querySummary = Cause List for ${data.query.date} at ${data.query.court};
+                        }
+
+                        historyHtml += `
+                            <li class="p-3 border-b border-gray-100 hover:bg-gray-50 transition duration-150 ease-in-out">
+                                <div class="flex justify-between items-center">
+                                    <span class="font-medium text-gray-800">${querySummary}</span>
+                                    <span class="text-xs text-gray-400">${date}</span>
+                                </div>
+                                <p class="text-sm text-gray-500 mt-1">Status: ${data.response.status || 'Success'}</p>
+                            </li>
+                        `;
+                    });
+                }
+                historyListEl.innerHTML = historyHtml;
+            }, (error) => {
+                console.error("Error listening to history changes:", error);
+                historyListEl.innerHTML = '<p class="text-red-500 p-4">Failed to load history.</p>';
+            });
+        }
+
+        // --- Core Fetcher Logic (SIMULATED) ---
+
+        /**
+         * Simulates fetching case details from a hypothetical API endpoint.
+         * NOTE: In a real-world scenario, this function would call an external backend
+         * service (e.g., Python/Node.js) to handle the complex scraping and CAPTCHA
+         * interaction with the live eCourts portal.
+         */
+        async function fetchCaseDetails() {
+            const caseType = document.getElementById('caseType').value.trim();
+            const caseNumber = document.getElementById('caseNumber').value.trim();
+            const year = document.getElementById('year').value.trim();
+            const court = document.getElementById('court').value;
+
+            if (!caseType || !caseNumber || !year) {
+                document.getElementById('result-message').innerHTML = createMessageBox('Please fill in Case Type, Case Number, and Year.', 'warning');
+                return;
+            }
+
+            const queryData = { court, caseType, caseNumber, year };
+            const resultDiv = document.getElementById('case-result');
+            const messageDiv = document.getElementById('result-message');
+
+            resultDiv.innerHTML = '';
+            messageDiv.innerHTML = createLoadingSpinner('Fetching case details...');
+
+            // Simulate API call delay and result
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
+            let responseData;
+            let resultStatus = 'Success';
+
+            // Simple simulation of success/failure based on input
+            if (caseNumber === '999') {
+                // Simulated Not Found Error
+                responseData = {
+                    status: 'Error',
+                    message: 'Case number 999 not found for the specified type and year.',
+                    rawResponse: { error: 404, detail: 'No matching records found in eCourts database.' }
+                };
+                messageDiv.innerHTML = createMessageBox(responseData.message, 'error');
+                resultStatus = 'Error';
+            } else {
+                // Simulated Success
+                responseData = {
+                    status: 'Success',
+                    parties: M/s. ${caseType} Corporation & Anr. vs. Sri R. K. Sharma,
+                    filingDate: '2023-08-15',
+                    nextHearingDate: '2025-11-20',
+                    caseStatus: 'Hearing/Arguments (Pending)',
+                    court: court,
+                    judgmentLink: 'mock_judgment_order_2024.pdf',
+                    orders: [
+                        { date: '2024-09-01', description: 'Final Judgment Order', download: 'mock_judgment_20240901.pdf' },
+                        { date: '2024-06-10', description: 'Interim Injunction Order', download: 'mock_order_20240610.pdf' }
+                    ],
+                    rawResponse: { data: { caseId: caseType + caseNumber + year, fetchedAt: new Date().toISOString() } }
+                };
+                messageDiv.innerHTML = createMessageBox(Successfully fetched details for Case ${caseType}/${caseNumber}/${year}., 'success');
+                resultDiv.innerHTML = renderCaseDetails(responseData);
+                resultStatus = 'Success';
+            }
+
+            // Store the query and raw response in Firestore
+            await saveQueryToHistory('case', queryData, {
+                status: resultStatus,
+                message: responseData.message || 'Data fetched.',
+                rawResponse: responseData.rawResponse
+            });
+        }
+
+        /**
+         * Simulates fetching the cause list for a specific court and date.
+         */
+        async function fetchCauseList() {
+            const causeListDate = document.getElementById('causeListDate').value;
+            const causeListCourt = document.getElementById('causeListCourt').value;
+
+            if (!causeListDate || !causeListCourt) {
+                document.getElementById('cause-list-message').innerHTML = createMessageBox('Please select a Date and Court for the Cause List.', 'warning');
+                return;
+            }
+
+            const queryData = { date: causeListDate, court: causeListCourt };
+            const resultDiv = document.getElementById('cause-list-result');
+            const messageDiv = document.getElementById('cause-list-message');
+
+            resultDiv.innerHTML = '';
+            messageDiv.innerHTML = createLoadingSpinner('Fetching Cause List...');
+
+            // Simulate API call delay and result
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
+            let responseData;
+            let resultStatus = 'Success';
+
+            // Simulated Success
+            responseData = {
+                status: 'Success',
+                court: causeListCourt,
+                date: causeListDate,
+                items: [
+                    { time: '10:30 AM', caseNo: 'WP(C) 123/2024', parties: 'XYZ Petitioner vs. Union of India' },
+                    { time: '11:00 AM', caseNo: 'CIVIL 45/2023', parties: 'A. K. Roy vs. State of Bengal' },
+                    { time: '01:30 PM', caseNo: 'CRL. A. 77/2021', parties: 'The State vs. M. K. Jain' },
+                ],
+                downloadLink: mock_causelist_${causeListCourt}_${causeListDate}.pdf,
+                rawResponse: { data: { count: 3, fetchedAt: new Date().toISOString() } }
+            };
+
+            messageDiv.innerHTML = createMessageBox(Cause List for ${causeListCourt} on ${causeListDate} fetched., 'success');
+            resultDiv.innerHTML = renderCauseList(responseData);
+            resultStatus = 'Success';
+
+            // Store the query and raw response in Firestore
+            await saveQueryToHistory('cause_list', queryData, {
+                status: resultStatus,
+                message: 'Data fetched.',
+                rawResponse: responseData.rawResponse
+            });
+        }
+
+        // --- Utility Functions for UI Rendering ---
+
+        function createMessageBox(message, type) {
+            let color, icon;
+            switch (type) {
+                case 'success':
+                    color = 'bg-green-100 border-green-400 text-green-700';
+                    icon = '<svg class="w-5 h-5 mr-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"></path></svg>';
+                    break;
+                case 'error':
+                    color = 'bg-red-100 border-red-400 text-red-700';
+                    icon = '<svg class="w-5 h-5 mr-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"></path></svg>';
+                    break;
+                case 'warning':
+                default:
+                    color = 'bg-yellow-100 border-yellow-400 text-yellow-700';
+                    icon = '<svg class="w-5 h-5 mr-3" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.487 0l5.58 9.92c.765 1.36-.212 3.099-1.743 3.099H4.42c-1.53 0-2.508-1.739-1.743-3.099l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>';
+                    break;
+            }
+            return `
+                <div class="flex items-center p-4 rounded-lg shadow-md ${color} my-4 transition duration-300">
+                    ${icon}
+                    <p class="font-medium">${message}</p>
+                </div>
+            `;
+        }
+
+        function createLoadingSpinner(message) {
+            return `
+                <div class="flex items-center justify-center p-6 rounded-lg bg-indigo-50 my-4 text-indigo-700">
+                    <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-indigo-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span class="font-medium">${message}</span>
+                </div>
+            `;
+        }
+
+        function renderCaseDetails(data) {
+            const orderList = data.orders.map(order => `
+                <li class="flex justify-between items-center py-2 border-b border-gray-100 last:border-b-0">
+                    <span class="text-gray-700 font-medium">${order.description}</span>
+                    <div class="flex items-center space-x-3">
+                        <span class="text-sm text-gray-500">${order.date}</span>
+                        <a href="#" onclick="alert('Simulated download of ${order.download}. In a real app, this would be a direct file link.'); return false;" class="text-indigo-600 hover:text-indigo-800 font-semibold transition duration-150">
+                            Download PDF
+                        </a>
+                    </div>
+                </li>
+            `).join('');
+
+            return `
+                <div class="space-y-6">
+                    <div class="p-6 bg-white rounded-xl shadow-lg border border-gray-100">
+                        <h2 class="text-xl font-bold text-gray-800 mb-4 border-b pb-2">Case Summary</h2>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                            ${renderDetailItem('Court', data.court)}
+                            ${renderDetailItem('Parties', data.parties)}
+                            ${renderDetailItem('Filing Date', data.filingDate)}
+                            ${renderDetailItem('Next Hearing', data.nextHearingDate)}
+                            <div class="md:col-span-2">
+                                ${renderDetailItem('Current Status', <span class="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-yellow-100 text-yellow-800">${data.caseStatus}</span>)}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="p-6 bg-white rounded-xl shadow-lg border border-gray-100">
+                        <h2 class="text-xl font-bold text-gray-800 mb-4 border-b pb-2">Judgments & Orders</h2>
+                        <ul class="divide-y divide-gray-200">
+                            ${orderList}
+                        </ul>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderCauseList(data) {
+             const listItems = data.items.map(item => `
+                <li class="grid grid-cols-3 gap-4 py-3 border-b border-gray-100 last:border-b-0 text-sm">
+                    <span class="font-semibold text-gray-700">${item.time}</span>
+                    <span class="text-gray-600">${item.caseNo}</span>
+                    <span class="text-gray-500">${item.parties}</span>
+                </li>
+            `).join('');
+
+            return `
+                <div class="p-6 bg-white rounded-xl shadow-lg border border-gray-100">
+                    <h2 class="text-xl font-bold text-gray-800 mb-4 border-b pb-2">Cause List for ${data.date} - ${data.court}</h2>
+                    <div class="grid grid-cols-3 gap-4 font-bold text-gray-800 mb-3 border-b pb-2">
+                        <span>Time</span>
+                        <span>Case Number</span>
+                        <span>Parties</span>
+                    </div>
+                    <ul class="divide-y divide-gray-200">
+                        ${listItems}
+                    </ul>
+                    <a href="#" onclick="alert('Simulated download of ${data.downloadLink}.'); return false;" class="mt-4 inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 transition duration-150">
+                        Download Cause List PDF
+                    </a>
+                </div>
+            `;
+        }
+
+        function renderDetailItem(label, value) {
+            return `
+                <div>
+                    <dt class="text-gray-500 font-medium">${label}</dt>
+                    <dd class="mt-1 text-gray-900">${value}</dd>
+                </div>
+            `;
+        }
+        
+        // --- Fix for TypeError: window.fetchCaseDetails is not a function ---
+        // Expose core functions to the global window object immediately upon module load
+        // so that the HTML 'onclick' handlers can find them.
+        window.fetchCaseDetails = fetchCaseDetails;
+        window.fetchCauseList = fetchCauseList;
+        window.loadQueryHistory = loadQueryHistory;
+
+
+        window.onload = initializeFirebase;
+    </script>
+</head>
+<body class="p-4 sm:p-8">
+    <div id="app-container" class="container mx-auto">
+        <header class="text-center mb-10">
+            <h1 class="text-4xl font-extrabold text-indigo-800">eCourts Data Explorer</h1>
+            <p class="text-gray-600 mt-2">Simulated Case Lookup and Cause List Fetcher for Indian Courts.</p>
+            <div class="mt-4 p-3 text-sm bg-yellow-50 text-yellow-800 border border-yellow-200 rounded-lg">
+                <strong>NOTE:</strong> Due to security constraints, the data fetching logic is <strong>SIMULATED</strong>. To make this functional in the real world, you must replace the JavaScript fetchCaseDetails and fetchCauseList functions with calls to your own external, CAPTCHA-handling scraping backend.
+            </div>
+             <p class="text-xs text-gray-500 mt-2">Authenticated User ID: <span class="font-mono text-xs" id="display-user-id">Loading...</span></p>
+             <script>
+                // Display the user ID after the JS module loads and populates the global variable
+                window.addEventListener('load', () => {
+                    const authInterval = setInterval(() => {
+                        if (window.userId) {
+                            document.getElementById('display-user-id').textContent = window.userId;
+                            clearInterval(authInterval);
+                        }
+                    }, 100);
+                });
+             </script>
+        </header>
+
+        <main class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Main Content Area -->
+            <div class="lg:col-span-2 space-y-8">
+                <!-- Case Search Section -->
+                <section class="bg-white p-6 rounded-xl shadow-2xl border border-indigo-100">
+                    <h2 class="text-2xl font-semibold text-indigo-700 mb-4">Search Case Details</h2>
+                    <div class="space-y-4">
+                        <div class="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                            <div>
+                                <label for="caseType" class="block text-sm font-medium text-gray-700">Case Type (e.g., WP, SA)</label>
+                                <input type="text" id="caseType" value="WP(C)" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 border">
+                            </div>
+                            <div>
+                                <label for="caseNumber" class="block text-sm font-medium text-gray-700">Case Number</label>
+                                <input type="text" id="caseNumber" value="123" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 border">
+                            </div>
+                            <div>
+                                <label for="year" class="block text-sm font-medium text-gray-700">Year</label>
+                                <input type="number" id="year" value="2024" min="1990" max="2099" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 border">
+                            </div>
+                            <div>
+                                <label for="court" class="block text-sm font-medium text-gray-700">Court</label>
+                                <select id="court" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 border bg-white">
+                                    <option value="Delhi HC">Delhi HC</option>
+                                    <option value="Bombay HC">Bombay HC</option>
+                                    <option value="District Court Chennai">District Court Chennai</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <button onclick="window.fetchCaseDetails()" class="w-full inline-flex justify-center items-center px-4 py-2 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition duration-150">
+                            Fetch Case Details
+                        </button>
+                    </div>
+
+                    <div id="result-message">
+                        <!-- Messages (Loading, Error, Success) will appear here -->
+                    </div>
+
+                    <div id="case-result" class="mt-6">
+                        <!-- Parsed Case Details will be rendered here -->
+                    </div>
+                </section>
+
+                <!-- Cause List Search Section -->
+                <section class="bg-white p-6 rounded-xl shadow-2xl border border-indigo-100">
+                    <h2 class="text-2xl font-semibold text-indigo-700 mb-4">Download Cause List</h2>
+                    <div class="space-y-4">
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label for="causeListDate" class="block text-sm font-medium text-gray-700">Date</label>
+                                <input type="date" id="causeListDate" value="2025-11-20" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 border">
+                            </div>
+                            <div>
+                                <label for="causeListCourt" class="block text-sm font-medium text-gray-700">Court</label>
+                                <select id="causeListCourt" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2 border bg-white">
+                                    <option value="Madras HC">Madras HC</option>
+                                    <option value="Bombay HC">Bombay HC</option>
+                                    <option value="District Court Chennai">District Court Chennai</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <button onclick="window.fetchCauseList()" class="w-full inline-flex justify-center items-center px-4 py-2 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition duration-150">
+                            Fetch & Download Cause List
+                        </button>
+                    </div>
+
+                    <div id="cause-list-message">
+                        <!-- Messages will appear here -->
+                    </div>
+
+                    <div id="cause-list-result" class="mt-6">
+                        <!-- Cause List details will be rendered here -->
+                    </div>
+                </section>
+            </div>
+
+            <!-- History Sidebar -->
+            <aside class="lg:col-span-1">
+                <div class="bg-white p-6 rounded-xl shadow-2xl border border-gray-100 sticky top-4">
+                    <h2 class="text-2xl font-semibold text-gray-700 mb-4 border-b pb-2">Query History (Firestore)</h2>
+                    <ul id="history-list" class="max-h-96 overflow-y-auto divide-y divide-gray-200">
+                        <p class="text-gray-500 italic p-4">Loading history...</p>
+                    </ul>
+                </div>
+            </aside>
+        </main>
+    </div>
+</body>
+</html>
